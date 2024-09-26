@@ -1,126 +1,215 @@
 import numpy as np
+import os
+import numpy as np
 import matplotlib.pyplot as plt
-import scipy
+from scipy.io import wavfile
+from scipy.signal import stft, istft, lfilter,resample
+from settings import *
+from pesq import pesq
+from pystoi import stoi
 
-# define function to load wav files (audio)
-def load_wav(file_path):
-    # load wav file
-    wav = scipy.io.wavfile.read(file_path)
-    # get sample rate
-    sample_rate = wav[0]
-    # get audio data
-    audio = wav[1]
-    return audio, sample_rate
+def load_audio(file_path):
+    sample_rate, audio = wavfile.read(file_path)
+    if audio.ndim > 1:  # Convert stereo to mono if needed
+        audio = audio.mean(axis=1)
+    return sample_rate, audio
 
-def dft(signal):
-    N = len(signal)
-    n = np.arange(N)
-    k = n.reshape((N, 1))
-    exp_matrix = np.exp(-2j * np.pi * k * n / N)
-    return np.dot(exp_matrix, signal)
+def resample_audio(audio, orig_sr, target_sr):
+    #Resample the audio to match the target sample rate.
+    num_samples = int(len(audio) * target_sr / orig_sr)
+    resampled_audio = resample(audio, num_samples)
+    return resampled_audio
 
-def stft(signal, window_size, hop_size, window_function=np.hamming):
-    # Generate window function (e.g., Hamming or Hanning)
-    window = window_function(window_size)
+def add_noise_from_file(clean_audio, clean_sample_rate, noise_file_path, noise_factor=noise_factor, amplification_factor=amplification_factor):
+    # Load the noise file
+    noise_sample_rate, noise_audio = wavfile.read(noise_file_path)
     
-    # Number of frames
-    num_frames = (len(signal) - window_size) // hop_size + 1
+    # Convert noise to mono if needed
+    if noise_audio.ndim > 1:
+        noise_audio = noise_audio.mean(axis=1)
     
-    # STFT matrix to hold the results
-    stft_matrix = np.zeros((window_size, num_frames), dtype=complex)
+    # Resample noise to match clean audio sample rate if necessary
+    if noise_sample_rate != clean_sample_rate:
+        noise_audio = resample_audio(noise_audio, noise_sample_rate, clean_sample_rate)
     
-    # Apply windowing and DFT to each frame
-    for i in range(num_frames):
-        start_idx = i * hop_size
-        end_idx = start_idx + window_size
-        
-        # Windowed segment
-        segment = signal[start_idx:end_idx] * window
-        
-        # Apply DFT to the segment
-        stft_matrix[:, i] = dft(segment)
+    # If the noise is shorter, repeat it to match the length of the clean audio
+    if len(noise_audio) < len(clean_audio):
+        noise_audio = np.tile(noise_audio, int(np.ceil(len(clean_audio) / len(noise_audio))))
     
-    return stft_matrix
+    # Trim noise to the length of the clean audio
+    noise_audio = noise_audio[:len(clean_audio)]
+    
+    # Verify that noise is not silent or blank
+    if np.max(np.abs(noise_audio)) == 0:
+        print("Warning: Noise is silent or blank.")
+        return clean_audio  # Return clean audio if the noise is silent
+    
+    # Normalize the noise
+    noise_audio = noise_audio / np.max(np.abs(noise_audio))
+    
+    # Apply the amplification factor to make the noise louder
+    amplified_noise = noise_audio * amplification_factor
+    
+    # Scale the noise by the noise factor and relative to clean audio
+    scaled_noise = amplified_noise * noise_factor * np.max(np.abs(clean_audio))
+    
+    # Add the scaled noise to the clean audio
+    noised_audio = clean_audio + scaled_noise
+    
+    # Normalize the result to avoid clipping
+    noised_audio = noised_audio / np.max(np.abs(noised_audio))
+    
+    return noised_audio
 
-def generate_test_signal(sample_rate, duration, freqs):
-    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-    signal = sum(np.sin(2 * np.pi * freq * t) for freq in freqs)
-    return signal
+def save_audio(file_path, sample_rate, audio):
+    # Scale audio back to int16 range for WAV format
+    audio_scaled = np.int16(audio * 32767)
+    wavfile.write(file_path, sample_rate, audio_scaled)
 
-def plot_stft(stft_matrix, sample_rate, hop_size,window_size):
-    time_bins = np.arange(stft_matrix.shape[1]) * hop_size / sample_rate
-    freq_bins = np.fft.fftfreq(window_size, 1 / sample_rate)
-    
-    plt.figure(figsize=(10, 6))
-    plt.pcolormesh(time_bins, freq_bins[:window_size//2], np.abs(stft_matrix[:window_size//2, :]), shading='gouraud')
-    plt.title('Short-Time Fourier Transform (STFT)')
-    plt.ylabel('Frequency [Hz]')
-    plt.xlabel('Time [sec]')
-    plt.colorbar(label='Magnitude')
-    plt.show()
 
-#Function to denoise audio using STFT
-def denoise_audio(audio, sample_rate, window_size, hop_size, threshold):
-    # Compute the STFT
-    stft_matrix = stft(audio, window_size, hop_size)
+def process_clean_audio_with_noise(input_folder, noise_folder, output_folder, noise_factor=noise_factor, amplification_factor=amplification_factor):
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    noise_files = [f for f in os.listdir(noise_folder) if f.endswith('.wav')]
+    if not noise_files:
+        raise FileNotFoundError(f"No noise files found in {noise_folder}")
     
-    # Compute the magnitude spectrogram
-    magnitude_spectrogram = np.abs(stft_matrix)
-    
-    # Apply thresholding
-    magnitude_spectrogram[magnitude_spectrogram < threshold] = 0
-    
-    # Reconstruct the denoised audio
-    denoised_stft = stft_matrix * (magnitude_spectrogram > 0)
-    denoised_audio = np.real(np.sum(denoised_stft, axis=0))
-    
+    for filename in os.listdir(input_folder):
+        if filename.endswith('.wav'):
+            # Load clean audio
+            file_path = os.path.join(input_folder, filename)
+            sample_rate, clean_audio = load_audio(file_path)
+            
+            # Randomly pick a noise file from the noise folder
+            noise_file_path = os.path.join(noise_folder, np.random.choice(noise_files))
+            
+            # Add background noise with amplification
+            noised_audio = add_noise_from_file(clean_audio, sample_rate, noise_file_path, noise_factor, amplification_factor)
+            
+            # Save noised audio
+            output_path = os.path.join(output_folder, f'noised_{filename}')
+            save_audio(output_path, sample_rate, noised_audio)
+            print(f'Saved noised audio: {output_path}')
+
+
+#Denoising of audio
+
+def adaptive_thresholding(magnitude_noisy, noise_floor, factor=1.5):
+    #Adaptive thresholding based on local noise estimate.
+    threshold = factor * noise_floor
+    return np.where(magnitude_noisy > threshold, magnitude_noisy, 0)
+
+def wiener_filter(magnitude_noisy, noise_estimate):
+    #Wiener filter to smooth out the residual noise.
+    noise_power = noise_estimate ** 2
+    signal_power = magnitude_noisy ** 2
+    wiener_gain = signal_power / (signal_power + noise_power + 1e-10)
+    return magnitude_noisy * wiener_gain
+
+def apply_smoothing(audio, window_size=5):
+    #Apply a simple moving average filter to smooth the audio signal.W
+    kernel = np.ones(window_size) / window_size
+    return lfilter(kernel, 1, audio)
+
+def block_thresholding(noisy_audio, sample_rate, window_size, hop_size, threshold_factor):
+    f, t, stft_noisy = stft(noisy_audio, fs=sample_rate, nperseg=window_size, noverlap=hop_size)
+    magnitude_noisy = np.abs(stft_noisy)
+
+    # Estimate the noise floor using the median of the magnitude spectrum
+    noise_floor = np.median(magnitude_noisy, axis=1, keepdims=True)
+
+    # Apply adaptive thresholding
+    denoised_magnitude = adaptive_thresholding(magnitude_noisy, noise_floor, threshold_factor)
+
+    # Apply Wiener filtering to further reduce noise
+    denoised_magnitude = wiener_filter(denoised_magnitude, noise_floor)
+
+    # Reconstruct the STFT
+    denoised_stft = denoised_magnitude * np.exp(1j * np.angle(stft_noisy))
+
+    # Inverse STFT to get the denoised audio
+    _, denoised_audio = istft(denoised_stft, fs=sample_rate, nperseg=window_size, noverlap=hop_size)
+
+    # Apply smoothing filter to the denoised audio
+    denoised_audio = apply_smoothing(denoised_audio)
+
     return denoised_audio
 
-# visualize noised vs denoised audio
-def plot_audio(audio, denoised_audio, sample_rate, plot_name):
-    # Ensure audio and denoised_audio have the same length
-    min_length = min(len(audio), len(denoised_audio))
-    audio = audio[:min_length]
+#create a function for evaluation of the denoising process
+def downsample_audio(audio, original_sr, target_sr):
+    # Calculate the number of samples after downsampling
+    num_samples = int(len(audio) * target_sr / original_sr)
+    # Resample the audio
+    return resample(audio, num_samples)
+def evaluate_denoising(clean_audio, noisy_audio, denoised_audio, sample_rate):
+    # Ensure all audio signals are of the same length
+    min_length = min(len(clean_audio), len(noisy_audio), len(denoised_audio))
+    clean_audio = clean_audio[:min_length]
+    noisy_audio = noisy_audio[:min_length]
     denoised_audio = denoised_audio[:min_length]
-    
-    # Generate the time array with the same length as audio
-    time = np.arange(min_length) / sample_rate
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(time, audio, label='Noised Audio')
-    plt.plot(time, denoised_audio, label='Denoised Audio', linestyle='--')
-    plt.title('Noised vs Denoised Audio')
-    plt.xlabel('Time [sec]')
-    plt.ylabel('Amplitude')
-    plt.legend()
-    plt.savefig("plots/" + plot_name + ".png")
-    plt.close()
 
+    # Downsample audio to 16000 Hz for PESQ
+    target_sr = 16000
+    clean_audio_ds = downsample_audio(clean_audio, sample_rate, target_sr)
+    noisy_audio_ds = downsample_audio(noisy_audio, sample_rate, target_sr)
+    denoised_audio_ds = downsample_audio(denoised_audio, sample_rate, target_sr)
 
-# Generate noisy wave by mixing clean with noise
-def generate_noisy_wave(clean_wave, noise_wave, noise_ratio):
-    # Normalize the clean wave
-    clean_wave = clean_wave / np.max(np.abs(clean_wave))
-    
-    # Normalize the noise wave
-    noise_wave = noise_wave / np.max(np.abs(noise_wave))
-    #Repeat the shorter array to match the length of the longer array
-    if len(clean_wave) > len(noise_wave):
-        noise_wave = np.tile(noise_wave, len(clean_wave) // len(noise_wave) + 1)
-    else:
-        clean_wave = np.tile(clean_wave, len(noise_wave) // len(clean_wave) + 1)
-    #Truncate or pad the shorter array to match the length of the longer array.
+    # Calculate SNR
+    snr_noisy = 10 * np.log10(np.sum(clean_audio ** 2) / np.sum((clean_audio - noisy_audio) ** 2))
+    snr_denoised = 10 * np.log10(np.sum(clean_audio ** 2) / np.sum((clean_audio - denoised_audio) ** 2))
 
-    if len(clean_wave) > len(noise_wave):
-        noise_wave = np.append(noise_wave, np.zeros(len(clean_wave) - len(noise_wave)))
-    else:
-        clean_wave = np.append(clean_wave, np.zeros(len(noise_wave) - len(clean_wave)))
-    # Compute the noisy wave
-    noisy_wave = clean_wave + noise_ratio * noise_wave
-    
-    return noisy_wave
+    # Calculate PESQ
+    pesq_noisy = pesq(target_sr, noisy_audio_ds, clean_audio_ds, 'wb')  # Order: noisy, clean
+    pesq_denoised = pesq(target_sr, denoised_audio_ds, clean_audio_ds, 'wb')  # Order: denoised, clean
 
-#save noisy wave
-def save_wav(wave, filename, sample_rate):
-    wave = np.int16(wave * 32767)
-    scipy.io.wavfile.write(filename, sample_rate, wave)
+    # Calculate STOI
+    stoi_noisy = stoi(clean_audio_ds, noisy_audio_ds, target_sr, extended=False)
+    stoi_denoised = stoi(clean_audio_ds, denoised_audio_ds, target_sr, extended=False)
+
+    # Calculate MSE
+    mse_noisy = np.mean((clean_audio - noisy_audio) ** 2)
+    mse_denoised = np.mean((clean_audio - denoised_audio) ** 2)
+
+    # Calculate PSNR
+    psnr_noisy = 10 * np.log10(np.max(clean_audio) ** 2 / mse_noisy) if mse_noisy > 0 else float('inf')
+    psnr_denoised = 10 * np.log10(np.max(clean_audio) ** 2 / mse_denoised) if mse_denoised > 0 else float('inf')
+
+    return {
+        'SNR': (snr_noisy, snr_denoised),
+        'PESQ': (pesq_noisy, pesq_denoised),
+        'STOI': (stoi_noisy, stoi_denoised),
+        'MSE': (mse_noisy, mse_denoised),
+        'PSNR': (psnr_noisy, psnr_denoised)
+    }
+
+def plot_audio_signals(file_name,clean_audio, noisy_audio, denoised_audio, sample_rate):
+    # Create time axis for each signal
+    time_clean = np.arange(len(clean_audio)) / sample_rate
+    time_noisy = np.arange(len(noisy_audio)) / sample_rate
+    time_denoised = np.arange(len(denoised_audio)) / sample_rate
+
+    # Create a figure with 3 subplots
+    fig, axs = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+
+    # Plot Clean Audio
+    axs[0].plot(time_clean, clean_audio, color='g')
+    axs[0].set_title('Clean Audio Signal')
+    axs[0].set_ylabel('Amplitude')
+    axs[0].grid()
+
+    # Plot Noisy Audio
+    axs[1].plot(time_noisy, noisy_audio, color='r')
+    axs[1].set_title('Noisy Audio Signal')
+    axs[1].set_ylabel('Amplitude')
+    axs[1].grid()
+
+    # Plot Denoised Audio
+    axs[2].plot(time_denoised, denoised_audio, color='b')
+    axs[2].set_title('Denoised Audio Signal')
+    axs[2].set_xlabel('Time [s]')
+    axs[2].set_ylabel('Amplitude')
+    axs[2].grid()
+
+    plt.tight_layout()
+    plt.savefig(f'{plot_folder_path}/{file_name}_audio_signals.png')
