@@ -21,7 +21,6 @@ def process_denoising(input_file, output_file, window_size=2048, hop_size=1024, 
 
 
 
-# create main function
 if __name__ == "__main__":
 
     if generate_noisy_data:
@@ -54,7 +53,7 @@ if __name__ == "__main__":
             })
             plot_audio_signals(file_name,clean_audio, noisy_audio, denoised_audio, sample_rate)
     results_df = pd.DataFrame(results)
-    # Calculate averages
+
     # Calculate average results
     avg_results = results_df.mean(numeric_only=True)  # Calculate mean for numeric columns
     avg_results['File'] = 'Average'  # Add label for average row
