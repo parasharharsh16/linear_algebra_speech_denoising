@@ -7,7 +7,7 @@ This project focuses on denoising audio signals using Short-Time Fourier Transfo
 ### Installation
 To install and run this project, follow these steps:
 
-1. Clone the repository: ```git clone``
+1. Clone the repository: ```git clone git@github.com:parasharharsh16/linear_algebra_speech_denoising.git``
 2. Navigate into the project directory: ```cd linear_algebra_speech_denoising```
 3. Create a conda (use Miniconda or Anaconda) environment: ```conda create --prefix ./.venv python=3.9```
 4. Activate the conda environment: ```conda activate ./.venv```
