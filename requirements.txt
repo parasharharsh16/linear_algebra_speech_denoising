@@ -1,3 +1,7 @@
 numpy
-matplotlib
 scipy
+matplotlib
+pandas
+tabulate
+pesq
+pystoi
