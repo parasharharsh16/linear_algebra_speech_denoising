@@ -63,9 +63,9 @@ The project evaluates the quality of the denoised audio using:
 
 ### Result Images
 
-Below is a plot showing the clean, noisy, and denoised audio signals for each audio file:
+Below is a plot showing the clean, noisy, and denoised audio signals for one audio file:
 
-![Clean, Noisy, and Denoised Audio](https://raw.githubusercontent.com/parasharharsh16/linear_algebra_speech_denoising/main/output/plots/noised_p228_004.wav_audio_signals.png)
+![Clean, Noisy, and Denoised Audio](https://github.com/parasharharsh16/linear_algebra_speech_denoising/blob/main/output/plots/noised_p228_005.wav_audio_signals.png)
 *Plot of Clean, Noisy, and Denoised Audio*
 
 ## Team Members
